@@ -1,0 +1,44 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// A single full pre-market analysis run (news digest + picks) for a trading day.
+// We store the whole result as JSON so we can replay without re-calling the AI.
+model AnalysisRun {
+  id            String   @id @default(cuid())
+  runDate       String   @unique // YYYY-MM-DD (IST)
+  premarketJson String   // JSON: global cues, economic events, news digest, sentiment
+  picksJson     String   // JSON: array of 5 stock picks with full reasoning
+  marketStatus  String   // "pre-open" | "open" | "closed"
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([runDate])
+}
+
+// Optional: track individual picks for historical review / hit-rate
+model Pick {
+  id         String   @id @default(cuid())
+  runDate    String
+  symbol     String
+  name       String
+  sector     String
+  entryLow   Float
+  entryHigh  Float
+  stopLoss   Float
+  target     Float
+  confidence Int
+  thesis     String
+  direction  String   // "long" | "short"
+  createdAt  DateTime @default(now())
+
+  @@index([runDate])
+}
