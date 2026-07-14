@@ -25,7 +25,7 @@ export async function GET(req: Request) {
         } catch {
           picks = [];
         }
-        if (picks.length === 5 && age < PICKS_TTL_MS) {
+        if (picks.length === 6 && age < PICKS_TTL_MS) {
           const intel: PremarketIntel = JSON.parse(cached.premarketJson || "{}");
           return NextResponse.json({ ok: true, cached: true, data: { picks, intel } });
         }

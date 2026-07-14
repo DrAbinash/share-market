@@ -1,0 +1,32 @@
+# Synology Container Manager compatible format
+# Remove 'version' line if your DSM supports compose spec v2+
+
+services:
+  mri-reports:
+    build: .
+    container_name: mri-report-manager
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3080}:3000"
+    volumes:
+      # Persistent database — survives container rebuilds
+      - ./data/db:/app/data/db
+      # Persistent uploaded MRI report files
+      - ./data/uploads:/app/data/uploads
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:/app/data/db/mri_reports.db
+      - UPLOAD_DIR=/app/data/uploads
+    # Synology NAS resource limits (adjust for your model)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

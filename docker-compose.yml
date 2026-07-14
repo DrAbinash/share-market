@@ -1,0 +1,46 @@
+# AlphaDesk — Synology Container Manager compatible docker-compose
+# Build + run on any Synology NAS (amd64 or arm64). No external DB needed —
+# SQLite lives on a persistent bind-mounted volume.
+
+# On Synology DSM 7.x: place this file + Dockerfile + docker-entrypoint.sh +
+# prisma/ + src/ + package.json etc. in a folder (e.g. /volume1/docker/alphadesk/),
+# then use Container Manager > Project > Create > Use docker-compose.
+
+services:
+  alphadesk:
+    build: .
+    container_name: alphadesk
+    restart: unless-stopped
+    ports:
+      # Host port is configurable via .env (default 3080). Container always
+      # listens on 3000 internally.
+      - "${APP_PORT:-3080}:3000"
+    volumes:
+      # Persistent SQLite database — survives image rebuilds & updates.
+      - ./data/db:/app/data/db
+    environment:
+      - NODE_ENV=production
+      - TZ=Asia/Kolkata
+      - DATABASE_URL=file:/app/data/db/alphadesk.db
+      # Optional: override the externally-exposed port hint (informational only).
+      - APP_PORT=${APP_PORT:-3080}
+    # Synology NAS resource limits — adjust to your model. AlphaDesk is light
+    # (SQLite + Next.js standalone), 512M is comfortable; 256M works on j-series.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Synology DSM logging
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

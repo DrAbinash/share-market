@@ -63,3 +63,33 @@ Work Log:
 Stage Summary:
 - FULLY VERIFIED end-to-end. App is production-ready.
 - The software does exactly what was requested: studies economics/charts/news before open, suggests 5 sound intraday picks with strong technical+fundamental basis, full reasoning, risk management (R:R >= 1.8 enforced), and a professional trading dashboard.
+
+---
+Task ID: 11-12
+Agent: main (orchestrator)
+Task: Bump picks from 5 to 6 + make deployable on Synology NAS
+
+Work Log:
+- Read user's reference deploy files (Dockerfile 2/3, docker-compose 2/3, docker-entrypoint.sh, env 2/3, dockerignore) — used Dockerfile(3) pattern (Next.js standalone + Prisma + SQLite + Alpine) as the model
+- Backend 5→6: prompt now asks for "exactly 6", diversity bumped to 5 sectors, slice(0,6), picks cache length-check === 6
+- BACKFILL robustness: LLMs sometimes underdeliver (<6 picks). Added buildBackfillPick() that tops up from next-best technical candidates (ranked by bullishScore) with a deterministic trade plan (entry band, swing-low/ATR stop, 1.8R target, 2.6R stretch) + auto-generated narrative. Guarantees exactly 6 cards always.
+- Frontend 5→6: section title "Top 6 Intraday Picks", intro copy "shortlists 6", avg-confidence badge checks === 6, FirstRunNotice skeleton count = 6
+- Cleared stale 5-pick cache from DB via Prisma script
+- /api/health endpoint added (dependency-free, for Docker healthcheck)
+- Synology deploy bundle:
+  * Dockerfile: multi-stage node:20-alpine, npm ci from bun.lock-derived lockfile, prisma generate (musl engine), standalone build, runtime stage copies standalone+static+prisma engine, tini, sqlite, wget for healthcheck, multi-arch (amd64+arm64)
+  * docker-entrypoint.sh: mkdir data dir, prisma db push (idempotent), verify engine + server.js, exec node server.js
+  * docker-compose.yml: Synology Container Manager format, build context, port ${APP_PORT:-3080}:3000, ./data/db volume mount, 512M memory limit, wget healthcheck, json-file logging with rotation
+  * .env.example (APP_PORT, TZ, DATABASE_URL), .dockerignore (excludes node_modules/.next/logs/uploads)
+  * DEPLOY-SYNOLOGY.md: full step-by-step (upload, configure, Container Manager GUI + SSH build, open dashboard, update flow, troubleshooting, resource notes, scope limits)
+- Verified end-to-end: /api/picks returns 6 picks across 6 sectors (TCS, NTPC, HINDUNILVR, HDFCBANK, BAJAJ-AUTO, LT — last one backfilled from technicals), /api/health returns 200 healthy
+- Browser verified: 6 pick ribbons (#1-6), "Top 6 Intraday Picks" title, "Avg confidence 85%" badge, no errors
+- VLM visual: "6 stock pick cards visible. Grid layout: 3 columns × 2 rows. Balanced and visually appealing; 6th card does not leave awkward gap. All 6 cards fully visible with content. No visual issues."
+- Lint: 0 errors, 0 warnings
+
+Stage Summary:
+- Dashboard now shows 6 picks (3×2 balanced grid) — looks better as requested
+- LLM underdelivery made impossible via technical backfill
+- Full Synology deployment bundle ready: Dockerfile + docker-entrypoint.sh + docker-compose.yml + .env.example + .dockerignore + DEPLOY-SYNOLOGY.md
+- Pattern matches user's proven reference deploys (Next.js standalone + Prisma + SQLite + Alpine + bind-mounted volume + healthcheck)
+- Persistent DB on ./data/db/alphadesk.db survives container rebuilds; entrypoint auto-runs prisma db push on every start

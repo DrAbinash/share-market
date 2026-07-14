@@ -104,7 +104,7 @@ export default function Page() {
               Today's Strategic Intraday Brief
             </h1>
             <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-              AI studies economics, charts &amp; news before the opening bell — then shortlists 5 sound,
+              AI studies economics, charts &amp; news before the opening bell — then shortlists 6 sound,
               non-speculative intraday longs with full reasoning and risk management.
             </p>
           </div>
@@ -114,7 +114,7 @@ export default function Page() {
                 <Clock className="h-3 w-3" /> Cached
               </Badge>
             )}
-            {picks.length === 5 && (
+            {picks.length === 6 && (
               <Badge variant="outline" className="gap-1 border-gain/40 text-gain bg-gain/10">
                 <Zap className="h-3 w-3" /> Avg confidence {avgConfidence}%
               </Badge>
@@ -138,7 +138,7 @@ export default function Page() {
                   <ListChecks className="h-4 w-4" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-semibold">Top 5 Intraday Picks</h2>
+                  <h2 className="text-sm font-semibold">Top 6 Intraday Picks</h2>
                   <p className="text-[11px] text-muted-foreground">
                     Ranked by confidence · grounded in real news + computed technicals · each with entry, SL, target &amp; thesis
                   </p>
@@ -203,13 +203,13 @@ function FirstRunNotice() {
           <div className="text-sm font-medium">Running pre-market analysis…</div>
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
             The strategist is gathering real-time news &amp; economics via web search, computing technicals
-            across the stock universe, and reasoning through 5 disciplined intraday picks. First run takes
+            across the stock universe, and reasoning through 6 disciplined intraday picks. First run takes
             ~30–60 seconds; subsequent loads are instant from cache.
           </p>
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {Array.from({ length: 5 }).map((_, i) => (
+        {Array.from({ length: 6 }).map((_, i) => (
           <Skeleton key={i} className="h-[330px] w-full rounded-xl" />
         ))}
       </div>

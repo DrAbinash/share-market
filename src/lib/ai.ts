@@ -1,12 +1,14 @@
 // AI layer: uses z-ai-web-dev-sdk (backend only).
 // 1) getPremarketIntel(): parallel web searches for real market news/economics,
 //    then an LLM digests them into a structured pre-market brief.
-// 2) generatePicks(intel, candidateSummaries): the strategist LLM picks 5
+// 2) generatePicks(intel, candidateSummaries): the strategist LLM picks 6
 //    intraday candidates with full reasoning, grounded in the real news brief
-//    AND the computed technical summary for each candidate.
+//    AND the computed technical summary for each candidate. If the LLM
+//    underdelivers, the next-best technical candidates are backfilled so the
+//    dashboard always shows exactly 6 picks.
 
 import ZAI from "z-ai-web-dev-sdk";
-import { STOCK_UNIVERSE } from "./stocks";
+import { STOCK_UNIVERSE, STOCK_BY_SYMBOL } from "./stocks";
 import { generateCandles } from "./ohlc";
 import { summarize, Candle } from "./indicators";
 
@@ -302,9 +304,9 @@ Selection criteria (in priority order):
 2. News/fundamental trigger: each pick must have a real catalyst from today's themes/sector tilts (earnings, policy, flows, global commodity move, sector rotation). Reject picks with no discernible driver.
 3. Risk discipline: stop loss must be on a logical technical level (below swing low / EMA / ATR-based), target must give R:R >= 1.8.
 4. Liquidity: only use the provided universe (all are liquid).
-5. Diversification: spread across at least 4 different sectors; avoid 2 picks in the same sector unless exceptional.
+5. Diversification: spread across at least 5 different sectors; avoid 2 picks in the same sector unless exceptional.
 
-Return STRICT JSON only — an array of exactly 5 objects with this schema:
+Return STRICT JSON only — an array of exactly 6 objects with this schema:
 [
   {
     "symbol": string,             // must match a candidate symbol exactly
@@ -353,77 +355,161 @@ Rules:
     raw = [];
   }
 
-  // Enrich + validate + rank + compute R:R + fill meta from universe
+  // Enrich + validate + compute R:R + fill meta from universe
   const bySymbol = new Map(STOCK_UNIVERSE.map((s) => [s.symbol, s]));
   const candBySymbol = new Map(candidates.map((c) => [c.symbol, c]));
 
-  const picks: StockPick[] = raw
-    .filter((p: any) => p && typeof p.symbol === "string" && bySymbol.has(p.symbol))
-    .map((p: any, idx: number) => {
-      const meta = bySymbol.get(p.symbol)!;
-      const cand = candBySymbol.get(p.symbol)!;
-      const entryLow = round2(Number(p.entryLow) || cand.ltp * 0.998);
-      const entryHigh = round2(Number(p.entryHigh) || cand.ltp * 1.002);
-      const entryMid = (entryLow + entryHigh) / 2;
-      const stop = round2(Number(p.stopLoss) || cand.swingLow);
-      const stopDist = Math.max(0.01, entryMid - stop);
+  const enrichLLM = (p: any): StockPick | null => {
+    if (!p || typeof p.symbol !== "string" || !bySymbol.has(p.symbol)) return null;
+    const meta = bySymbol.get(p.symbol)!;
+    const cand = candBySymbol.get(p.symbol)!;
+    const entryLow = round2(Number(p.entryLow) || cand.ltp * 0.998);
+    const entryHigh = round2(Number(p.entryHigh) || cand.ltp * 1.002);
+    const entryMid = (entryLow + entryHigh) / 2;
+    const stop = round2(Number(p.stopLoss) || cand.swingLow);
+    const stopDist = Math.max(0.01, entryMid - stop);
 
-      // Risk-discipline floor: enforce reward >= 1.8 * risk and stretch >= 2.5 * risk.
-      // If the strategist's target is too tight, widen it to the minimum acceptable level.
-      let target = round2(Number(p.target) || entryMid + stopDist * 1.8);
-      if (target - entryMid < 1.8 * stopDist) {
-        target = round2(entryMid + 1.8 * stopDist);
-      }
-      let target2 = p.target2 ? round2(Number(p.target2)) : round2(entryMid + 2.6 * stopDist);
-      if (target2 - entryMid < 2.5 * stopDist) {
-        target2 = round2(entryMid + 2.6 * stopDist);
-      }
-      if (target2 <= target) target2 = round2(entryMid + 2.6 * stopDist);
+    // Risk-discipline floor: enforce reward >= 1.8 * risk and stretch >= 2.5 * risk.
+    let target = round2(Number(p.target) || entryMid + stopDist * 1.8);
+    if (target - entryMid < 1.8 * stopDist) target = round2(entryMid + 1.8 * stopDist);
+    let target2 = p.target2 ? round2(Number(p.target2)) : round2(entryMid + 2.6 * stopDist);
+    if (target2 - entryMid < 2.5 * stopDist) target2 = round2(entryMid + 2.6 * stopDist);
+    if (target2 <= target) target2 = round2(entryMid + 2.6 * stopDist);
 
-      const rr = (target - entryMid) / stopDist;
-      return {
-        rank: idx + 1,
-        symbol: p.symbol,
-        name: meta.name,
-        sector: meta.sector,
-        direction: "long" as const,
-        ltp: cand.ltp,
-        entryLow,
-        entryHigh,
-        stopLoss: stop,
-        target,
-        target2,
-        riskReward: Math.round(rr * 100) / 100,
-        confidence: Math.max(0, Math.min(100, Math.round(Number(p.confidence) || 60))),
-        conviction: (["high", "medium", "low"].includes(p.conviction) ? p.conviction : "medium") as "high" | "medium" | "low",
-        indicators: {
-          rsi14: cand.rsi14,
-          ema20: cand.ema20,
-          ema50: cand.ema50,
-          macdHist: cand.macdHist,
-          atrPct: cand.atrPct,
-          volumeRatio: cand.volumeRatio,
-          swingHigh: cand.swingHigh,
-          swingLow: cand.swingLow,
-          setupLabel: cand.setupLabel,
-        },
-        technicalThesis: String(p.technicalThesis || ""),
-        fundamentalCatalyst: String(p.fundamentalCatalyst || ""),
-        newsTrigger: String(p.newsTrigger || ""),
-        risks: Array.isArray(p.risks) ? p.risks.map(String).slice(0, 4) : [],
-        invalidation: String(p.invalidation || ""),
-        timeHorizon: String(p.timeHorizon || "Intraday, exit by 15:15 IST"),
-        positionGuidance: String(p.positionGuidance || "Risk 0.5% of capital; size using stop distance."),
-      };
-    });
+    const rr = (target - entryMid) / stopDist;
+    return {
+      rank: 0,
+      symbol: p.symbol,
+      name: meta.name,
+      sector: meta.sector,
+      direction: "long" as const,
+      ltp: cand.ltp,
+      entryLow,
+      entryHigh,
+      stopLoss: stop,
+      target,
+      target2,
+      riskReward: Math.round(rr * 100) / 100,
+      confidence: Math.max(0, Math.min(100, Math.round(Number(p.confidence) || 60))),
+      conviction: (["high", "medium", "low"].includes(p.conviction) ? p.conviction : "medium") as "high" | "medium" | "low",
+      indicators: {
+        rsi14: cand.rsi14,
+        ema20: cand.ema20,
+        ema50: cand.ema50,
+        macdHist: cand.macdHist,
+        atrPct: cand.atrPct,
+        volumeRatio: cand.volumeRatio,
+        swingHigh: cand.swingHigh,
+        swingLow: cand.swingLow,
+        setupLabel: cand.setupLabel,
+      },
+      technicalThesis: String(p.technicalThesis || ""),
+      fundamentalCatalyst: String(p.fundamentalCatalyst || ""),
+      newsTrigger: String(p.newsTrigger || ""),
+      risks: Array.isArray(p.risks) ? p.risks.map(String).slice(0, 4) : [],
+      invalidation: String(p.invalidation || ""),
+      timeHorizon: String(p.timeHorizon || "Intraday, exit by 15:15 IST"),
+      positionGuidance: String(p.positionGuidance || "Risk 0.5% of capital; size using stop distance."),
+    };
+  };
 
-  // Re-sort by confidence desc, keep top 5, re-rank
+  let picks: StockPick[] = raw
+    .map(enrichLLM)
+    .filter((p: StockPick | null): p is StockPick => p !== null);
+
+  // BACKFILL: if the LLM underdelivered (< 6 picks), top up from the next-best
+  // technical candidates by bullish score. This guarantees the dashboard always
+  // shows exactly 6 cards. Backfilled picks get a sensible default trade plan
+  // computed from the technicals + an auto-generated narrative.
+  const pickedSymbols = new Set(picks.map((p) => p.symbol));
+  if (picks.length < 6) {
+    const fillers = candidates
+      .filter((c) => !pickedSymbols.has(c.symbol))
+      .sort((a, b) => b.bullishScore - a.bullishScore)
+      .slice(0, 6 - picks.length)
+      .map((c) => buildBackfillPick(c));
+    picks = picks.concat(fillers);
+  }
+
+  // Re-sort by confidence desc, keep top 6, re-rank
   const ranked = picks
     .sort((a, b) => b.confidence - a.confidence || b.riskReward - a.riskReward)
-    .slice(0, 5)
+    .slice(0, 6)
     .map((p, i) => ({ ...p, rank: i + 1 }));
 
   return ranked;
+}
+
+// Build a sound default pick from a candidate's technicals (used when backfilling
+// slots the LLM didn't fill). Trade plan is computed deterministically: entry band
+// around LTP, stop below swing low (or ATR-based if too tight), target at 1.8R,
+// stretch at 2.6R. Narrative is generated from the actual indicator values.
+function buildBackfillPick(c: CandidateSummary): StockPick {
+  const meta = STOCK_BY_SYMBOL[c.symbol];
+  const entryLow = round2(c.ltp * 0.998);
+  const entryHigh = round2(c.ltp * 1.002);
+  const entryMid = (entryLow + entryHigh) / 2;
+  // Stop: below swing low, but at least 1 ATR% away to avoid getting stopped on noise.
+  const atrStop = entryMid * (c.atrPct / 100);
+  let stop = Math.min(c.swingLow, entryMid - atrStop);
+  // Ensure stop is sensibly below entry (min 0.4%)
+  if (entryMid - stop < entryMid * 0.004) stop = round2(entryMid * 0.996);
+  stop = round2(stop);
+  const stopDist = Math.max(0.01, entryMid - stop);
+  const target = round2(entryMid + 1.8 * stopDist);
+  const target2 = round2(entryMid + 2.6 * stopDist);
+  const rr = (target - entryMid) / stopDist;
+
+  const conf = Math.max(50, Math.min(80, c.bullishScore));
+  const conviction: "high" | "medium" | "low" = conf >= 70 ? "high" : conf >= 60 ? "medium" : "low";
+
+  const trendWord = c.emaTrend === "up" ? "above a rising EMA stack" : c.emaTrend === "down" ? "with EMAs flattening" : "in a range";
+  const macdWord = c.macdHist >= 0 ? "positive MACD histogram" : "negative but stabilising MACD";
+  const rsiWord = c.rsi14 >= 60 ? "firm momentum (RSI in strength zone)" : c.rsi14 >= 50 ? "neutral-positive RSI" : "RSI cooling off from oversold";
+  const volWord = c.volumeRatio >= 1.3 ? "with above-average volume confirmation" : "on normal volume";
+
+  return {
+    rank: 0,
+    symbol: c.symbol,
+    name: meta.name,
+    sector: c.sector,
+    direction: "long",
+    ltp: c.ltp,
+    entryLow,
+    entryHigh,
+    stopLoss: stop,
+    target,
+    target2,
+    riskReward: Math.round(rr * 100) / 100,
+    confidence: conf,
+    conviction,
+    indicators: {
+      rsi14: c.rsi14,
+      ema20: c.ema20,
+      ema50: c.ema50,
+      macdHist: c.macdHist,
+      atrPct: c.atrPct,
+      volumeRatio: c.volumeRatio,
+      swingHigh: c.swingHigh,
+      swingLow: c.swingLow,
+      setupLabel: c.setupLabel,
+    },
+    technicalThesis: `${c.symbol} is ${trendWord} (${c.setupLabel}). RSI ${c.rsi14}, ${macdWord}, ${volWord}. Entry planned on a small pullback into the ${inr2(entryLow)}-${inr2(entryHigh)} band with a stop below ${inr2(stop)}.`,
+    fundamentalCatalyst: `Backfilled from technical strength screen — aligned with today's ${c.sector.toLowerCase()} posture. No stock-specific news trigger flagged by the LLM; verify catalysts on your terminal before trading.`,
+    newsTrigger: `Sector: ${c.sector}. Review pre-market intel for today's theme alignment.`,
+    risks: [
+      `No confirmed LLM-flagged news catalyst — trade is technical-driven only`,
+      `Market-wide risk-off move could invalidate the setup`,
+      `Stop at ${inr2(stop)} is technical (swing low / ATR) and can be hit by noise`,
+    ],
+    invalidation: `Intraday close below ${inr2(stop)} or a sharp deterioration in broader market sentiment`,
+    timeHorizon: "Intraday, exit by 15:15 IST",
+    positionGuidance: "Risk 0.5% of capital; size using the stop distance. Smaller size than LLM-conviction picks.",
+  };
+}
+
+function inr2(n: number): string {
+  return `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
 
 function round2(n: number): number {
