@@ -13,6 +13,7 @@ import { PickCard } from "@/components/dashboard/pick-card";
 import { StockDetailSheet } from "@/components/dashboard/stock-detail-sheet";
 import { NewsFeed } from "@/components/dashboard/news-feed";
 import { RiskCalculator } from "@/components/dashboard/risk-calculator";
+import { TrackRecord } from "@/components/dashboard/track-record";
 import { SiteFooter } from "@/components/dashboard/site-footer";
 import type { PremarketIntel, StockPick } from "@/components/dashboard/types";
 
@@ -186,6 +187,9 @@ export default function Page() {
             <NewsFeed />
           </div>
         </div>
+
+        {/* Track record — full-width bright table */}
+        <TrackRecord />
       </main>
 
       <SiteFooter lastRun={lastUpdated} />
