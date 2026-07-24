@@ -1,7 +1,9 @@
-import { NextResponse } from "next/server";
+import { z } from "zod";
 import { db } from "@/lib/db";
-import { getPremarketIntel, PremarketIntel } from "@/lib/ai";
+import { getPremarketIntel } from "@/lib/ai";
 import { getISTDate } from "@/lib/market-status";
+import { errorMessage, fail, ok, parseQuery } from "@/lib/api";
+import type { PremarketIntel } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -9,26 +11,35 @@ export const maxDuration = 60;
 // Cache TTL: 30 minutes. Pre-market intel goes stale fast but we avoid hammering search.
 const TTL_MS = 30 * 60 * 1000;
 
+const querySchema = z.object({
+  force: z.enum(["0", "1"]).optional(),
+});
+
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const force = searchParams.get("force") === "1";
+  const parsed = parseQuery(req, querySchema);
+  if (!parsed.success) return parsed.response;
+  const force = parsed.data.force === "1";
   const runDate = getISTDate();
 
   try {
     if (!force) {
       const cached = await db.analysisRun.findUnique({ where: { runDate } });
-      if (cached) {
-        const age = Date.now() - cached.updatedAt.getTime();
-        if (age < TTL_MS) {
-          const premarket: PremarketIntel = JSON.parse(cached.premarketJson);
-          return NextResponse.json({ ok: true, cached: true, data: premarket });
+      if (cached && Date.now() - cached.updatedAt.getTime() < TTL_MS) {
+        try {
+          const premarket = JSON.parse(cached.premarketJson) as PremarketIntel;
+          // A row created by the picks route before its intel landed holds
+          // "{}" — fall through and fetch rather than rendering an empty brief.
+          if (premarket && Object.keys(premarket).length > 0) {
+            return ok(premarket, { cached: true });
+          }
+        } catch {
+          /* corrupt cache — fetch fresh below */
         }
       }
     }
 
     const intel = await getPremarketIntel();
 
-    // Upsert into DB
     await db.analysisRun.upsert({
       where: { runDate },
       create: {
@@ -40,11 +51,8 @@ export async function GET(req: Request) {
       update: { premarketJson: JSON.stringify(intel), updatedAt: new Date() },
     });
 
-    return NextResponse.json({ ok: true, cached: false, data: intel });
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Failed to build pre-market intelligence" },
-      { status: 500 },
-    );
+    return ok(intel, { cached: false });
+  } catch (e) {
+    return fail(errorMessage(e, "Failed to build pre-market intelligence"));
   }
 }

@@ -4,8 +4,7 @@
 // symbol always yields the same chart, so the LLM's technical summary and the
 // displayed chart stay consistent across requests/reloads.
 
-import { Candle } from "./indicators";
-import { StockMeta } from "./stocks";
+import type { Candle, StockMeta } from "./types";
 
 // xmur3 hash -> seeded PRNG
 function xmur3(str: string): () => number {

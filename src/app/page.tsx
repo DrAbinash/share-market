@@ -1,25 +1,34 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, AlertCircle, ListChecks, Sparkles, Clock, Zap } from "lucide-react";
+import { AlertCircle, Clock, ListChecks, Loader2, Sparkles, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { MarketHeader } from "@/components/dashboard/market-header";
 import { SentimentHero } from "@/components/dashboard/sentiment-hero";
-import { PremarketIntel } from "@/components/dashboard/premarket-intel";
+import { PremarketIntel as PremarketIntelPanel } from "@/components/dashboard/premarket-intel";
 import { PickCard } from "@/components/dashboard/pick-card";
 import { StockDetailSheet } from "@/components/dashboard/stock-detail-sheet";
 import { NewsFeed } from "@/components/dashboard/news-feed";
 import { RiskCalculator } from "@/components/dashboard/risk-calculator";
 import { TrackRecord } from "@/components/dashboard/track-record";
+import { BreadthStrip } from "@/components/dashboard/breadth-strip";
+import { DataSourceBadge } from "@/components/dashboard/data-source-badge";
 import { SiteFooter } from "@/components/dashboard/site-footer";
-import type { PremarketIntel, StockPick } from "@/components/dashboard/types";
+import type {
+  DataSource,
+  PremarketIntel,
+  ScreenerResponse,
+  StockPick,
+} from "@/components/dashboard/types";
 
 export default function Page() {
   const [picks, setPicks] = useState<StockPick[]>([]);
   const [intel, setIntel] = useState<PremarketIntel | null>(null);
+  const [breadth, setBreadth] = useState<ScreenerResponse["breadth"] | null>(null);
+  const [dataSource, setDataSource] = useState<DataSource>();
   const [picksLoading, setPicksLoading] = useState(true);
   const [intelLoading, setIntelLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -52,6 +61,20 @@ export default function Page() {
       }
     })();
 
+    // Market internals — cheap (no LLM), so it lands well before the picks.
+    const breadthPromise = (async () => {
+      try {
+        const r = await fetch("/api/screener");
+        const j = await r.json();
+        if (j.ok) {
+          setBreadth(j.data.breadth);
+          setDataSource(j.data.source);
+        }
+      } catch {
+        /* breadth is supplementary — never block the page on it */
+      }
+    })();
+
     // Picks (slower — depends on intel + LLM strategist)
     const picksPromise = (async () => {
       setPicksLoading(true);
@@ -61,6 +84,7 @@ export default function Page() {
         if (j.ok && j.data) {
           setPicks(j.data.picks || []);
           if (j.data.intel) setIntel(j.data.intel);
+          if (j.data.dataSource) setDataSource(j.data.dataSource);
           setCached(!!j.cached);
         } else if (j.error) {
           setError(j.error);
@@ -70,31 +94,41 @@ export default function Page() {
       } finally {
         setPicksLoading(false);
         setLastUpdated(
-          new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Calcutta", hour12: false }) + " IST",
+          new Date().toLocaleTimeString("en-IN", {
+            timeZone: "Asia/Calcutta",
+            hour12: false,
+          }) + " IST",
         );
       }
     })();
 
-    await Promise.all([intelPromise, picksPromise]);
+    await Promise.all([intelPromise, breadthPromise, picksPromise]);
     setRefreshing(false);
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate fetch-on-mount; fetchAll() flips its own loading flags before awaiting the API
     fetchAll(false);
   }, [fetchAll]);
 
   const handleAnalyze = (symbol: string) => {
-    const p = picks.find((x) => x.symbol === symbol) || null;
-    setActivePick(p);
+    setActivePick(picks.find((x) => x.symbol === symbol) || null);
     setSheetOpen(true);
   };
 
   const avgConfidence =
-    picks.length > 0 ? Math.round(picks.reduce((a, b) => a + b.confidence, 0) / picks.length) : 0;
+    picks.length > 0
+      ? Math.round(picks.reduce((a, b) => a + b.confidence, 0) / picks.length)
+      : 0;
+  const strategistPicks = picks.filter((p) => p.origin === "llm").length;
 
   return (
     <div className="min-h-screen flex flex-col grid-bg">
-      <MarketHeader onRefresh={() => fetchAll(true)} refreshing={refreshing} lastUpdated={lastUpdated} />
+      <MarketHeader
+        onRefresh={() => fetchAll(true)}
+        refreshing={refreshing}
+        lastUpdated={lastUpdated}
+      />
 
       <main className="flex-1 w-full mx-auto max-w-[1400px] px-4 sm:px-6 py-5 space-y-5">
         {/* Intro strip */}
@@ -102,20 +136,22 @@ export default function Page() {
           <div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight flex items-center gap-2">
               <Sparkles className="h-5 w-5 text-gain" />
-              Today's Strategic Intraday Brief
+              Today&apos;s Strategic Intraday Brief
             </h1>
             <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-              AI studies economics, charts &amp; news before the opening bell — then shortlists 6 sound,
-              non-speculative intraday longs with full reasoning and risk management.
+              AI studies economics, charts &amp; news before the opening bell — then shortlists{" "}
+              {picks.length || 6} sound, non-speculative intraday longs with full reasoning and risk
+              management.
             </p>
           </div>
-          <div className="flex items-center gap-2 text-[11px]">
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <DataSourceBadge source={dataSource} />
             {cached && !picksLoading && (
               <Badge variant="outline" className="gap-1 text-muted-foreground">
                 <Clock className="h-3 w-3" /> Cached
               </Badge>
             )}
-            {picks.length === 6 && (
+            {picks.length > 0 && (
               <Badge variant="outline" className="gap-1 border-gain/40 text-gain bg-gain/10">
                 <Zap className="h-3 w-3" /> Avg confidence {avgConfidence}%
               </Badge>
@@ -126,11 +162,14 @@ export default function Page() {
         {/* Sentiment + brief */}
         <SentimentHero intel={intel} loading={intelLoading} />
 
+        {/* Market internals */}
+        {breadth && <BreadthStrip breadth={breadth} />}
+
         {/* Two-column layout */}
         <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
           {/* Left: intel + picks */}
           <div className="space-y-5 min-w-0">
-            <PremarketIntel intel={intel} loading={intelLoading} />
+            <PremarketIntelPanel intel={intel} loading={intelLoading} />
 
             {/* Picks section */}
             <section className="rounded-2xl border border-border bg-card/30 p-4 sm:p-5">
@@ -139,9 +178,14 @@ export default function Page() {
                   <ListChecks className="h-4 w-4" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-semibold">Top 6 Intraday Picks</h2>
+                  <h2 className="text-sm font-semibold">
+                    Top {picks.length || 6} Intraday Picks
+                  </h2>
                   <p className="text-[11px] text-muted-foreground">
-                    Ranked by confidence · grounded in real news + computed technicals · each with entry, SL, target &amp; thesis
+                    Ranked by confidence · grounded in real news + computed technicals · each with
+                    entry, SL, target &amp; thesis
+                    {picks.length > 0 &&
+                      ` · ${strategistPicks} strategist-selected, ${picks.length - strategistPicks} from the technical screen`}
                   </p>
                 </div>
               </div>
@@ -167,7 +211,12 @@ export default function Page() {
                   <p className="text-sm text-muted-foreground">
                     No picks generated. Try re-running the analysis.
                   </p>
-                  <Button size="sm" variant="outline" className="mt-3" onClick={() => fetchAll(true)}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-3"
+                    onClick={() => fetchAll(true)}
+                  >
                     Re-run analysis
                   </Button>
                 </div>
@@ -206,9 +255,9 @@ function FirstRunNotice() {
         <div>
           <div className="text-sm font-medium">Running pre-market analysis…</div>
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            The strategist is gathering real-time news &amp; economics via web search, computing technicals
-            across the stock universe, and reasoning through 6 disciplined intraday picks. First run takes
-            ~30–60 seconds; subsequent loads are instant from cache.
+            The strategist is gathering real-time news &amp; economics via web search, computing
+            technicals across the stock universe, and reasoning through disciplined intraday picks.
+            First run takes ~30–60 seconds; subsequent loads are instant from cache.
           </p>
         </div>
       </div>

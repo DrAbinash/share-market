@@ -1,5 +1,18 @@
-export function inr(n: number, opts: { decimals?: number; compact?: boolean } = {}): string {
-  const { decimals = 2, compact = false } = opts;
+export interface InrOptions {
+  decimals?: number;
+  compact?: boolean;
+}
+
+/**
+ * Format a rupee amount.
+ *
+ * Accepts a bare decimal count as well as an options object: every call site in
+ * the dashboard was written as `inr(price, 0)` expecting whole rupees, but the
+ * options-only signature silently discarded that argument and rendered two
+ * decimals everywhere.
+ */
+export function inr(n: number, opts: InrOptions | number = {}): string {
+  const { decimals = 2, compact = false } = typeof opts === "number" ? { decimals: opts } : opts;
   if (compact && Math.abs(n) >= 1e7) return `₹${(n / 1e7).toFixed(2)}Cr`;
   if (compact && Math.abs(n) >= 1e5) return `₹${(n / 1e5).toFixed(2)}L`;
   return `₹${n.toLocaleString("en-IN", {

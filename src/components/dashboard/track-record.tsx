@@ -12,6 +12,7 @@ import {
   Calendar,
   Award,
   Skull,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,44 +28,7 @@ import {
 } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-
-interface TrackRecordRow {
-  date: string;
-  symbol: string;
-  name: string;
-  sector: string;
-  entryLow: number;
-  entryHigh: number;
-  stopLoss: number;
-  target: number;
-  ltp: number;
-  confidence: number;
-  conviction: string;
-  riskReward: number;
-  source: "live-llm" | "simulated";
-  outcome: "target" | "sl" | "time-exit" | "not-triggered" | "live";
-  outcomeLabel: string;
-  realizedR: number;
-  exitPrice: number | null;
-  exitNote: string;
-}
-
-interface TrackRecordSummary {
-  from: string;
-  to: string;
-  totalPicks: number;
-  livePicks: number;
-  tradesTaken: number;
-  targetHits: number;
-  slHits: number;
-  timeExits: number;
-  notTriggered: number;
-  winRate: number;
-  avgRealizedR: number;
-  totalR: number;
-  liveCount: number;
-  simulatedCount: number;
-}
+import type { TrackRecordRow, TrackRecordSummary } from "./types";
 
 type Range = "1d" | "db" | "7d" | "1m" | "custom";
 
@@ -148,6 +112,17 @@ export function TrackRecord() {
     }
   };
 
+  // Export exactly the range currently on screen, not a fixed default.
+  const csvParams = new URLSearchParams({ format: "csv" });
+  if (range === "custom" && from && to) {
+    csvParams.set("range", "custom");
+    csvParams.set("from", from);
+    csvParams.set("to", to);
+  } else {
+    csvParams.set("range", range);
+  }
+  const csvHref = `/api/track-record?${csvParams}`;
+
   return (
     <section className="rounded-2xl overflow-hidden shadow-2xl shadow-black/20 border border-slate-300">
       {/* Bright (light-themed) container — stands out from the dark dashboard */}
@@ -216,18 +191,29 @@ export function TrackRecord() {
             >
               Apply
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              asChild
+              className="h-7 text-xs rounded-full bg-white text-slate-600 border-slate-300 hover:bg-slate-100 gap-1"
+            >
+              <a href={csvHref} download>
+                <Download className="h-3 w-3" />
+                CSV
+              </a>
+            </Button>
           </div>
         </div>
 
         {/* Summary stats */}
         {loading || !summary ? (
-          <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-            {Array.from({ length: 7 }).map((_, i) => (
+          <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+            {Array.from({ length: 8 }).map((_, i) => (
               <Skeleton key={i} className="h-16 rounded-lg bg-slate-200" />
             ))}
           </div>
         ) : (
-          <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+          <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
             <StatCard label="Total Picks" value={String(summary.totalPicks)} icon={BarChart3} tone="slate" />
             <StatCard
               label="Win Rate"
@@ -241,10 +227,26 @@ export function TrackRecord() {
               icon={summary.totalR >= 0 ? Award : Skull}
               tone={summary.totalR >= 0 ? "emerald" : "rose"}
             />
-            <StatCard label="Avg R / Trade" value={`${summary.avgRealizedR > 0 ? "+" : ""}${summary.avgRealizedR.toFixed(2)}R`} icon={Target} tone="slate" />
+            <StatCard
+              label="Expectancy"
+              value={`${summary.avgRealizedR > 0 ? "+" : ""}${summary.avgRealizedR.toFixed(2)}R`}
+              icon={Target}
+              tone={summary.avgRealizedR >= 0 ? "emerald" : "rose"}
+            />
+            <StatCard
+              label="Profit Factor"
+              value={summary.profitFactor === 0 ? "—" : summary.profitFactor.toFixed(2)}
+              icon={BarChart3}
+              tone={summary.profitFactor >= 1.5 ? "emerald" : summary.profitFactor > 0 ? "amber" : "slate"}
+            />
+            <StatCard
+              label="Max Drawdown"
+              value={`-${summary.maxDrawdownR.toFixed(2)}R`}
+              icon={TrendingDown}
+              tone={summary.maxDrawdownR > 5 ? "rose" : "slate"}
+            />
             <StatCard label="Target Hits" value={String(summary.targetHits)} icon={Trophy} tone="emerald" />
             <StatCard label="SL Hits" value={String(summary.slHits)} icon={TrendingDown} tone="rose" />
-            <StatCard label="Time Exits" value={String(summary.timeExits)} icon={Clock} tone="amber" />
           </div>
         )}
 

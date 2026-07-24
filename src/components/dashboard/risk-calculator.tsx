@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { Calculator, Wallet, TrendingUp, ShieldAlert, Target } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { suggestQuantity } from "@/lib/journal-math";
+import { AddToJournal } from "./add-to-journal";
 import type { StockPick } from "./types";
 import { inr, num } from "./format";
 import { cn } from "@/lib/utils";
@@ -23,7 +25,9 @@ export function RiskCalculator({ pick }: Props) {
     const riskAmount = (cap * rp) / 100;
     const entryMid = (pick.entryLow + pick.entryHigh) / 2;
     const stopDist = Math.max(0.01, entryMid - pick.stopLoss);
-    const qty = Math.floor(riskAmount / stopDist);
+    // Same sizing rule the journal uses, so the number here is the number that
+    // gets recorded.
+    const qty = suggestQuantity(entryMid, pick.stopLoss, riskAmount);
     const exposure = qty * entryMid;
     const rewardPerShare = pick.target - entryMid;
     const potentialReward = qty * rewardPerShare;
@@ -47,7 +51,7 @@ export function RiskCalculator({ pick }: Props) {
       {!pick ? (
         <div className="rounded-lg border border-dashed border-border p-6 text-center">
           <Target className="h-6 w-6 mx-auto text-muted-foreground mb-2" />
-          <p className="text-xs text-muted-foreground">Open any pick's analysis to auto-fill the trade levels here.</p>
+          <p className="text-xs text-muted-foreground">Open any pick&apos;s analysis to auto-fill the trade levels here.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -76,6 +80,15 @@ export function RiskCalculator({ pick }: Props) {
               <Result icon={Target} label="Potential Reward" value={inr(calc.potentialReward, 0)} tone="gain" />
               <Result icon={ShieldAlert} label="Potential Loss" value={inr(calc.potentialLoss, 0)} tone="loss" />
             </div>
+          )}
+
+          {calc && calc.qty > 0 && (
+            <AddToJournal
+              symbol={pick.symbol}
+              entryPrice={calc.entryMid}
+              stopLoss={pick.stopLoss}
+              target={pick.target}
+            />
           )}
         </div>
       )}

@@ -1,84 +1,61 @@
 // Track-record engine: compares past predictions against their actual outcomes.
 //
 // For each date in the requested range:
-//  - If a real AnalysisRun exists in the DB (e.g. today's LLM picks) → use those picks.
-//  - Otherwise → generate 6 deterministic simulated picks from technicals computed
+//  - If a real AnalysisRun exists in the DB (e.g. today's LLM picks) → use those.
+//  - Otherwise → generate deterministic simulated picks from technicals computed
 //    on the candle slice up to that date (back-filled history).
 //
 // Outcome resolution: for each pick, the pick-day candle tells us whether price
-// entered the entry zone, and whether target or SL was hit first (conservative:
-// if both hit on the same candle, SL wins). Intraday picks resolve on the same
-// day's candle. Realized P&L is expressed in R-multiples.
+// entered the entry zone, and whether target or SL was hit first. Intraday picks
+// resolve on the same day's candle. Realised P&L is expressed in R-multiples.
+//
+// The candle series now comes from the shared market-data layer, so a backtest
+// runs against live history when a provider is reachable and falls back to the
+// deterministic synthetic series otherwise.
 
 import { db } from "./db";
-import { STOCK_UNIVERSE, getStock, StockMeta } from "./stocks";
-import { generateCandles } from "./ohlc";
-import { summarize, Candle, TechSummary } from "./indicators";
+import { STOCK_UNIVERSE, getStock } from "./stocks";
+import { getUniverseSeries } from "./market-data";
+import { summarize, MIN_CANDLES } from "./indicators";
+import type {
+  Candle,
+  StockMeta,
+  TechSummary,
+  TrackRecordResponse,
+  TrackRecordRow,
+  TrackRecordSummary,
+} from "./types";
 
-// ---------- Types ----------
+export type { TrackRecordResponse, TrackRecordRow, TrackRecordSummary };
 
-export interface TrackRecordRow {
-  date: string; // pick date YYYY-MM-DD
-  symbol: string;
-  name: string;
-  sector: string;
-  entryLow: number;
-  entryHigh: number;
-  stopLoss: number;
-  target: number;
-  ltp: number;
-  confidence: number;
-  conviction: string;
-  riskReward: number;
-  source: "live-llm" | "simulated";
-  outcome: "target" | "sl" | "time-exit" | "not-triggered" | "live";
-  outcomeLabel: string;
-  realizedR: number;
-  exitPrice: number | null;
-  exitNote: string;
+export type TrackRange = "1d" | "db" | "7d" | "1m" | "custom";
+
+/** Picks simulated per historical session. */
+const PICKS_PER_DAY = 6;
+/** ~6 months of history: enough for a 1-month lookback plus indicator warm-up. */
+const SERIES_LEN = 140;
+
+// ---------- Series access ----------
+
+/** One universe-wide load per track-record build, reused across every date in
+ *  the range. The previous implementation cached in a module-level Map that was
+ *  never invalidated, so a long-running server served stale prices forever. */
+async function loadSeries(): Promise<Map<string, Candle[]>> {
+  const raw = await getUniverseSeries(SERIES_LEN);
+  const out = new Map<string, Candle[]>();
+  for (const [symbol, result] of raw) out.set(symbol, result.candles);
+  return out;
 }
 
-export interface TrackRecordSummary {
-  from: string;
-  to: string;
-  totalPicks: number;
-  livePicks: number;
-  tradesTaken: number; // entered the zone
-  targetHits: number;
-  slHits: number;
-  timeExits: number;
-  notTriggered: number;
-  winRate: number; // % target hits / trades taken
-  avgRealizedR: number;
-  totalR: number;
-  bestPick?: TrackRecordRow;
-  worstPick?: TrackRecordRow;
-  liveCount: number;
-  simulatedCount: number;
-}
-
-export interface TrackRecordResponse {
-  rows: TrackRecordRow[];
-  summary: TrackRecordSummary;
-  availableRange: { earliest: string; latest: string };
-}
-
-// ---------- Candle series cache (deterministic per symbol) ----------
-
-const SERIES_LEN = 120; // ~4 months of history for 1-month lookback + indicator warmup
-const SERIES_CACHE = new Map<string, Candle[]>();
-
-function getSeries(symbol: string): Candle[] {
-  if (!SERIES_CACHE.has(symbol)) {
-    const meta = getStock(symbol);
-    if (!meta) return [];
-    SERIES_CACHE.set(symbol, generateCandles(meta, SERIES_LEN));
+/** The union of session dates across the universe, ascending. Live providers
+ *  can return slightly different date sets per symbol (halts, listings), so a
+ *  union is safer than trusting one symbol's calendar. */
+function collectDates(series: Map<string, Candle[]>): string[] {
+  const set = new Set<string>();
+  for (const candles of series.values()) {
+    for (const c of candles) set.add(c.date);
   }
-  return SERIES_CACHE.get(symbol)!;
-}
-
-function getCandleDates(): string[] {
-  return getSeries(STOCK_UNIVERSE[0].symbol).map((c) => c.date);
+  return [...set].sort();
 }
 
 function round2(n: number): number {
@@ -101,15 +78,15 @@ interface SimPick {
   riskReward: number;
 }
 
-function buildSimPick(meta: StockMeta, summary: TechSummary): SimPick {
+export function buildSimPick(meta: StockMeta, summary: TechSummary): SimPick {
   const ltp = summary.lastClose;
   const entryLow = round2(ltp * 0.998);
   const entryHigh = round2(ltp * 1.002);
   const entryMid = (entryLow + entryHigh) / 2;
 
-  // ATR-based intraday stop: 0.7x ATR below entry with 1.3 R:R — calibrated so
+  // ATR-based intraday stop: 0.7x ATR below entry with 1.5 R:R — calibrated so
   // both stop and target land within a typical day's range, producing a
-  // realistic ~30% win / ~35% loss / ~35% time-exit mix in the track record.
+  // realistic win / loss / time-exit mix rather than everything timing out.
   const atrAbs = summary.atr14 || entryMid * 0.015;
   let stop = entryMid - 0.7 * atrAbs;
   const minStopDist = entryMid * 0.004;
@@ -138,29 +115,36 @@ function buildSimPick(meta: StockMeta, summary: TechSummary): SimPick {
   };
 }
 
-function simulatePicksForDate(date: string): SimPick[] {
+function simulatePicksForDate(date: string, series: Map<string, Candle[]>): SimPick[] {
   const candidates: { meta: StockMeta; summary: TechSummary }[] = [];
 
   for (const meta of STOCK_UNIVERSE) {
-    const candles = getSeries(meta.symbol);
+    const candles = series.get(meta.symbol);
+    if (!candles) continue;
     const idx = candles.findIndex((c) => c.date === date);
-    if (idx < 21) continue;
+    // Only data available *before* the session may inform the pick — using the
+    // pick-day candle itself would be lookahead bias.
+    if (idx < MIN_CANDLES) continue;
 
-    const priorCandles = candles.slice(0, idx); // data available pre-market
-    const summary = summarize(priorCandles);
+    const priorCandles = candles.slice(0, idx);
+    let summary: TechSummary;
+    try {
+      summary = summarize(priorCandles);
+    } catch {
+      continue;
+    }
     candidates.push({ meta, summary });
   }
 
-  // Rank by bullish score, take top 6
   return candidates
     .sort((a, b) => b.summary.bullishScore - a.summary.bullishScore)
-    .slice(0, 6)
+    .slice(0, PICKS_PER_DAY)
     .map((c) => buildSimPick(c.meta, c.summary));
 }
 
 // ---------- Outcome computation ----------
 
-function computeOutcome(
+export function computeOutcome(
   pick: { entryLow: number; entryHigh: number; stopLoss: number; target: number },
   candle: Candle,
 ): {
@@ -184,7 +168,8 @@ function computeOutcome(
     };
   }
 
-  // Estimate entry price
+  // Estimate the fill: at the open if it opened inside the band, otherwise at
+  // the edge the price crossed first.
   const entryPrice =
     candle.open >= entryLow && candle.open <= entryHigh
       ? candle.open
@@ -197,15 +182,13 @@ function computeOutcome(
   const hitTarget = candle.high >= target;
 
   if (hitSL && hitTarget) {
-    // Both levels hit on the same candle — use the candle's direction as a
-    // proxy for which came first: a bullish close (close >= open) suggests
-    // price went up first (target hit), a bearish close suggests SL hit first.
+    // Both levels hit on the same candle — daily bars cannot tell us the order,
+    // so the candle's direction is used as a proxy.
     if (candle.close >= candle.open) {
-      const r = (target - entryPrice) / risk;
       return {
         outcome: "target",
         outcomeLabel: "Target Hit",
-        realizedR: Math.round(r * 100) / 100,
+        realizedR: Math.round(((target - entryPrice) / risk) * 100) / 100,
         exitPrice: target,
         exitNote: "Both levels hit intraday; bullish close → target assumed first",
       };
@@ -228,24 +211,22 @@ function computeOutcome(
     };
   }
   if (hitTarget) {
-    const r = (target - entryPrice) / risk;
     return {
       outcome: "target",
       outcomeLabel: "Target Hit",
-      realizedR: Math.round(r * 100) / 100,
+      realizedR: Math.round(((target - entryPrice) / risk) * 100) / 100,
       exitPrice: target,
       exitNote: "Target achieved intraday",
     };
   }
 
-  // Neither hit — time exit at close
-  const r = (candle.close - entryPrice) / risk;
+  // Neither hit — exit at the close.
   return {
     outcome: "time-exit",
     outcomeLabel: "Time Exit",
-    realizedR: Math.round(r * 100) / 100,
+    realizedR: Math.round(((candle.close - entryPrice) / risk) * 100) / 100,
     exitPrice: round2(candle.close),
-    exitNote: `Exited at close`,
+    exitNote: "Exited at close",
   };
 }
 
@@ -254,62 +235,12 @@ function rowFromPick(
   date: string,
   source: "live-llm" | "simulated",
   isLive: boolean,
+  series: Map<string, Candle[]>,
 ): TrackRecordRow | null {
   const meta = getStock(pick.symbol);
   if (!meta) return null;
 
-  // For "live" (today, not yet resolved), skip outcome computation
-  if (isLive) {
-    return {
-      date,
-      symbol: pick.symbol,
-      name: pick.name || meta.name,
-      sector: pick.sector || meta.sector,
-      entryLow: pick.entryLow,
-      entryHigh: pick.entryHigh,
-      stopLoss: pick.stopLoss,
-      target: pick.target,
-      ltp: pick.ltp,
-      confidence: pick.confidence,
-      conviction: pick.conviction,
-      riskReward: pick.riskReward,
-      source,
-      outcome: "live",
-      outcomeLabel: "Live",
-      realizedR: 0,
-      exitPrice: null,
-      exitNote: "Awaiting market resolution",
-    };
-  }
-
-  const candles = getSeries(pick.symbol);
-  const idx = candles.findIndex((c) => c.date === date);
-  if (idx < 0) {
-    return {
-      date,
-      symbol: pick.symbol,
-      name: pick.name || meta.name,
-      sector: pick.sector || meta.sector,
-      entryLow: pick.entryLow,
-      entryHigh: pick.entryHigh,
-      stopLoss: pick.stopLoss,
-      target: pick.target,
-      ltp: pick.ltp,
-      confidence: pick.confidence,
-      conviction: pick.conviction,
-      riskReward: pick.riskReward,
-      source,
-      outcome: "live",
-      outcomeLabel: "Live",
-      realizedR: 0,
-      exitPrice: null,
-      exitNote: "No candle data for this date",
-    };
-  }
-
-  const outcome = computeOutcome(pick, candles[idx]);
-
-  return {
+  const base = {
     date,
     symbol: pick.symbol,
     name: pick.name || meta.name,
@@ -323,62 +254,56 @@ function rowFromPick(
     conviction: pick.conviction,
     riskReward: pick.riskReward,
     source,
-    ...outcome,
   };
+
+  // Today's picks have not resolved yet.
+  if (isLive) {
+    return {
+      ...base,
+      outcome: "live",
+      outcomeLabel: "Live",
+      realizedR: 0,
+      exitPrice: null,
+      exitNote: "Awaiting market resolution",
+    };
+  }
+
+  const candles = series.get(pick.symbol) ?? [];
+  const idx = candles.findIndex((c) => c.date === date);
+  if (idx < 0) {
+    return {
+      ...base,
+      outcome: "live",
+      outcomeLabel: "Live",
+      realizedR: 0,
+      exitPrice: null,
+      exitNote: "No candle data for this date",
+    };
+  }
+
+  return { ...base, ...computeOutcome(pick, candles[idx]) };
 }
 
 // ---------- Main: build track record for a date range ----------
 
 export async function getTrackRecord(
-  range: "1d" | "db" | "7d" | "1m" | "custom",
+  range: TrackRange,
   from?: string,
   to?: string,
 ): Promise<TrackRecordResponse> {
-  const allDates = getCandleDates();
-  if (allDates.length === 0) {
-    return emptyResponse();
-  }
+  const series = await loadSeries();
+  const allDates = collectDates(series);
+  if (allDates.length < 3) return emptyResponse();
+
   const today = allDates[allDates.length - 1];
   const yesterday = allDates[allDates.length - 2];
 
-  // Resolve the date range
-  let fromDate: string;
-  let toDate: string;
+  const { fromDate, toDate } = resolveRange(range, allDates, from, to);
 
-  switch (range) {
-    case "1d":
-      fromDate = yesterday;
-      toDate = yesterday;
-      break;
-    case "db":
-      fromDate = allDates[allDates.length - 3];
-      toDate = allDates[allDates.length - 3];
-      break;
-    case "7d":
-      fromDate = allDates[allDates.length - 8];
-      toDate = yesterday;
-      break;
-    case "1m":
-      fromDate = allDates[allDates.length - 31];
-      toDate = yesterday;
-      break;
-    case "custom":
-    default:
-      toDate = to && to <= yesterday ? to : yesterday;
-      if (from && from >= allDates[0]) {
-        fromDate = from;
-      } else {
-        fromDate = allDates[allDates.length - 8];
-      }
-      break;
-  }
-
-  // Get candle dates in [fromDate, toDate], plus today for live rows
+  // Candle dates within [fromDate, toDate]; today is appended for live rows.
   const rangeDates = allDates.filter((d) => d >= fromDate && d <= toDate);
-  const includeToday = today >= fromDate && today <= toDate;
-  const allQueryDates = includeToday ? [...rangeDates, today] : rangeDates;
+  const allQueryDates = rangeDates.includes(today) ? rangeDates : [...rangeDates, today];
 
-  // Read stored runs for these dates
   const storedRuns = await db.analysisRun.findMany({
     where: { runDate: { in: allQueryDates } },
   });
@@ -392,7 +317,7 @@ export async function getTrackRecord(
     let picks: any[] = [];
     let source: "live-llm" | "simulated" = "simulated";
 
-    if (stored && stored.picksJson) {
+    if (stored?.picksJson) {
       try {
         const parsed = JSON.parse(stored.picksJson);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -405,12 +330,12 @@ export async function getTrackRecord(
     }
 
     if (picks.length === 0) {
-      picks = simulatePicksForDate(date);
+      picks = simulatePicksForDate(date, series);
       source = "simulated";
     }
 
     for (const pick of picks) {
-      const row = rowFromPick(pick, date, source, isLive);
+      const row = rowFromPick(pick, date, source, isLive, series);
       if (row) rows.push(row);
     }
   }
@@ -421,16 +346,54 @@ export async function getTrackRecord(
     return b.confidence - a.confidence;
   });
 
-  const summary = computeSummary(rows, fromDate, toDate);
-
   return {
     rows,
-    summary,
+    summary: computeSummary(rows, fromDate, toDate),
     availableRange: { earliest: allDates[0], latest: today },
   };
 }
 
-function computeSummary(rows: TrackRecordRow[], from: string, to: string): TrackRecordSummary {
+/** Map a range keyword onto concrete session dates, clamped to what history we
+ *  actually hold so a short series cannot produce an undefined bound. */
+export function resolveRange(
+  range: TrackRange,
+  allDates: string[],
+  from?: string,
+  to?: string,
+): { fromDate: string; toDate: string } {
+  const n = allDates.length;
+  const at = (offsetFromEnd: number) => allDates[Math.max(0, n - offsetFromEnd)];
+  const yesterday = at(2);
+
+  switch (range) {
+    case "1d":
+      return { fromDate: yesterday, toDate: yesterday };
+    case "db": {
+      // "Day before" — the session prior to yesterday.
+      const dayBefore = at(3);
+      return { fromDate: dayBefore, toDate: dayBefore };
+    }
+    case "7d":
+      return { fromDate: at(8), toDate: yesterday };
+    case "1m":
+      return { fromDate: at(31), toDate: yesterday };
+    case "custom":
+    default: {
+      const toDate = to && to <= yesterday ? to : yesterday;
+      const candidate = from && from >= allDates[0] && from <= toDate ? from : at(8);
+      // The 7-session fallback can itself sit past a near-term `to`, which would
+      // yield from > to and an empty range. Clamp so the window is never inverted.
+      const fromDate = candidate <= toDate ? candidate : allDates[0];
+      return { fromDate, toDate };
+    }
+  }
+}
+
+export function computeSummary(
+  rows: TrackRecordRow[],
+  from: string,
+  to: string,
+): TrackRecordSummary {
   const live = rows.filter((r) => r.outcome === "live");
   const trades = rows.filter(
     (r) => r.outcome === "target" || r.outcome === "sl" || r.outcome === "time-exit",
@@ -445,6 +408,22 @@ function computeSummary(rows: TrackRecordRow[], from: string, to: string): Track
   const avgR = trades.length > 0 ? totalR / trades.length : 0;
 
   const sorted = [...trades].sort((a, b) => b.realizedR - a.realizedR);
+
+  // Peak-to-trough drawdown of the cumulative R curve, walked oldest-first.
+  const chronological = [...trades].sort((a, b) => a.date.localeCompare(b.date));
+  let cumulative = 0;
+  let peak = 0;
+  let maxDrawdown = 0;
+  for (const t of chronological) {
+    cumulative += t.realizedR;
+    peak = Math.max(peak, cumulative);
+    maxDrawdown = Math.max(maxDrawdown, peak - cumulative);
+  }
+
+  const grossWin = trades.filter((t) => t.realizedR > 0).reduce((a, b) => a + b.realizedR, 0);
+  const grossLoss = Math.abs(
+    trades.filter((t) => t.realizedR < 0).reduce((a, b) => a + b.realizedR, 0),
+  );
 
   return {
     from,
@@ -463,7 +442,61 @@ function computeSummary(rows: TrackRecordRow[], from: string, to: string): Track
     worstPick: sorted[sorted.length - 1],
     liveCount: rows.filter((r) => r.source === "live-llm").length,
     simulatedCount: rows.filter((r) => r.source === "simulated").length,
+    // Expectancy per trade in R — the single most useful number here.
+    expectancyR: Math.round(avgR * 100) / 100,
+    maxDrawdownR: Math.round(maxDrawdown * 100) / 100,
+    profitFactor: grossLoss === 0 ? 0 : Math.round((grossWin / grossLoss) * 100) / 100,
   };
+}
+
+/** Serialise track-record rows to CSV for download. */
+export function trackRecordToCsv(rows: TrackRecordRow[]): string {
+  const headers = [
+    "Date",
+    "Symbol",
+    "Name",
+    "Sector",
+    "Entry Low",
+    "Entry High",
+    "Stop Loss",
+    "Target",
+    "R:R",
+    "Confidence",
+    "Conviction",
+    "Source",
+    "Outcome",
+    "Exit Price",
+    "Realized R",
+    "Note",
+  ];
+  const lines = rows.map((r) =>
+    [
+      r.date,
+      r.symbol,
+      r.name,
+      r.sector,
+      r.entryLow,
+      r.entryHigh,
+      r.stopLoss,
+      r.target,
+      r.riskReward,
+      r.confidence,
+      r.conviction,
+      r.source,
+      r.outcomeLabel,
+      r.exitPrice ?? "",
+      r.realizedR,
+      r.exitNote,
+    ]
+      .map(csvCell)
+      .join(","),
+  );
+  return [headers.join(","), ...lines].join("\n");
+}
+
+function csvCell(v: unknown): string {
+  const s = String(v ?? "");
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 function emptyResponse(): TrackRecordResponse {
@@ -484,6 +517,9 @@ function emptyResponse(): TrackRecordResponse {
       totalR: 0,
       liveCount: 0,
       simulatedCount: 0,
+      expectancyR: 0,
+      maxDrawdownR: 0,
+      profitFactor: 0,
     },
     availableRange: { earliest: "", latest: "" },
   };

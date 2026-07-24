@@ -2,9 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  /* config options here */
+  // Type errors previously did not fail the build, which is how a missing
+  // `components/dashboard/types` module went unnoticed across the whole UI.
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
   },
   reactStrictMode: false,
 };

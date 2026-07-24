@@ -1,24 +1,34 @@
-import { NextResponse } from "next/server";
 import { getStock } from "@/lib/stocks";
-import { generateCandles } from "@/lib/ohlc";
-import { summarize } from "@/lib/indicators";
+import { getSeries } from "@/lib/market-data";
+import { summarize, MIN_CANDLES } from "@/lib/indicators";
+import { errorMessage, fail, ok } from "@/lib/api";
+import type { StockDetail } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 export async function GET(_req: Request, { params }: { params: Promise<{ symbol: string }> }) {
   const { symbol } = await params;
-  const meta = getStock(symbol);
+  const meta = getStock(decodeURIComponent(symbol));
   if (!meta) {
-    return NextResponse.json({ ok: false, error: `Unknown symbol: ${symbol}` }, { status: 404 });
+    return fail(`Unknown symbol: ${symbol}`, 404);
   }
-  const candles = generateCandles(meta, 75);
-  const summary = summarize(candles);
-  return NextResponse.json({
-    ok: true,
-    data: {
+
+  try {
+    const series = await getSeries(meta.symbol, 120);
+    if (series.candles.length < MIN_CANDLES) {
+      return fail(`Insufficient price history for ${meta.symbol}`, 503);
+    }
+
+    const detail: StockDetail = {
       meta,
-      candles,
-      summary,
-    },
-  });
+      candles: series.candles,
+      summary: summarize(series.candles),
+      source: series.source,
+      provider: series.provider,
+    };
+    return ok(detail);
+  } catch (e) {
+    return fail(errorMessage(e, `Failed to load ${meta.symbol}`));
+  }
 }
