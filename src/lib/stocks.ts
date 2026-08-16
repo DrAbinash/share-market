@@ -1,16 +1,11 @@
 // Curated universe of liquid NSE large-cap / mid-cap stocks across sectors.
 // Baseline prices are approximate real-world reference levels (INR).
-// Used for: (1) candidate generation, (2) deterministic synthetic chart seeds,
-// (3) realistic entry/SL/target ranges for the LLM strategist.
+// Used for: (1) candidate generation, (2) deterministic synthetic chart seeds
+// when the live provider is unreachable, (3) sane entry/SL/target ranges.
 
-export interface StockMeta {
-  symbol: string;
-  name: string;
-  sector: string;
-  baseline: number; // approximate recent price (INR)
-  lotSize: number;
-  volatility: number; // daily volatility estimate (fraction, e.g. 0.018 = 1.8%)
-}
+import type { StockMeta } from "./types";
+
+export type { StockMeta };
 
 export const STOCK_UNIVERSE: StockMeta[] = [
   // Banking & Financials
@@ -28,7 +23,7 @@ export const STOCK_UNIVERSE: StockMeta[] = [
   { symbol: "HCLTECH", name: "HCL Technologies", sector: "Information Technology", baseline: 1620, lotSize: 350, volatility: 0.014 },
 
   // Oil, Gas & Energy
-  { symbol: "RELIANCE", name: "Reliance Industries", sector: "Oil & Gas / Conglomerate", baseline: 1290, lotSize: 500, volatility: 0.015 },
+  { symbol: "RELIANCE", name: "Reliance Industries", sector: "Oil & Gas", baseline: 1290, lotSize: 500, volatility: 0.015 },
   { symbol: "ONGC", name: "Oil & Natural Gas Corp", sector: "Oil & Gas", baseline: 265, lotSize: 3850, volatility: 0.021 },
   { symbol: "NTPC", name: "NTPC", sector: "Power", baseline: 360, lotSize: 3500, volatility: 0.017 },
   { symbol: "POWERGRID", name: "Power Grid Corp", sector: "Power", baseline: 320, lotSize: 4000, volatility: 0.014 },

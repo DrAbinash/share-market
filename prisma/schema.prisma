@@ -15,9 +15,10 @@ datasource db {
 model AnalysisRun {
   id            String   @id @default(cuid())
   runDate       String   @unique // YYYY-MM-DD (IST)
-  premarketJson String   // JSON: global cues, economic events, news digest, sentiment
-  picksJson     String   // JSON: array of 5 stock picks with full reasoning
-  marketStatus  String   // "pre-open" | "open" | "closed"
+  premarketJson String // JSON: global cues, economic events, news digest, sentiment
+  picksJson     String // JSON: array of stock picks with full reasoning
+  marketStatus  String // "pre-open" | "open" | "closed"
+  dataSource    String   @default("synthetic") // "live" | "synthetic" — provenance of the prices behind these picks
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -37,8 +38,41 @@ model Pick {
   target     Float
   confidence Int
   thesis     String
-  direction  String   // "long" | "short"
+  direction  String // "long" | "short"
   createdAt  DateTime @default(now())
 
   @@index([runDate])
+}
+
+// A paper trade taken from a pick (or entered manually). Open trades are marked
+// to market on read; closed trades keep their realised exit price so the
+// journal's P&L history stays stable.
+model PaperTrade {
+  id         String    @id @default(cuid())
+  symbol     String
+  name       String
+  sector     String
+  direction  String    @default("long")
+  entryPrice Float
+  stopLoss   Float
+  target     Float
+  quantity   Int
+  status     String    @default("open") // "open" | "closed"
+  outcome    String    @default("open") // "target" | "sl" | "manual" | "open"
+  exitPrice  Float?
+  notes      String    @default("")
+  openedAt   DateTime  @default(now())
+  closedAt   DateTime?
+
+  @@index([status])
+  @@index([symbol])
+}
+
+// A symbol the user wants to keep an eye on. Live technicals are joined on read
+// rather than stored, so a watchlist row never goes stale.
+model WatchlistItem {
+  id        String   @id @default(cuid())
+  symbol    String   @unique
+  note      String   @default("")
+  createdAt DateTime @default(now())
 }

@@ -1,6 +1,17 @@
 "use client";
 
-import { Target, ShieldAlert, TrendingUp, ChevronRight, Gauge, Activity, Zap, Newspaper } from "lucide-react";
+import {
+  Target,
+  ShieldAlert,
+  TrendingUp,
+  ChevronRight,
+  Gauge,
+  Activity,
+  Zap,
+  Newspaper,
+  Bot,
+  SlidersHorizontal,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -78,10 +89,36 @@ export function PickCard({ pick, onAnalyze }: Props) {
         {/* Header */}
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <h3 className="font-bold text-base tracking-tight truncate">{pick.symbol}</h3>
               <Badge variant="outline" className={cn("text-[9px] capitalize", convictionColor(pick.conviction))}>
                 {pick.conviction}
+              </Badge>
+              {/* A backfilled pick has no news catalyst behind it — say so on the
+                  card rather than letting it look strategist-reasoned. */}
+              <Badge
+                variant="outline"
+                className={cn(
+                  "text-[9px] gap-0.5",
+                  pick.origin === "llm"
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-gain"
+                    : "border-border bg-muted text-muted-foreground",
+                )}
+                title={
+                  pick.origin === "llm"
+                    ? "Selected by the strategist with a news catalyst"
+                    : "Backfilled from the technical screen — no news catalyst confirmed"
+                }
+              >
+                {pick.origin === "llm" ? (
+                  <>
+                    <Bot className="h-2.5 w-2.5" /> Strategist
+                  </>
+                ) : (
+                  <>
+                    <SlidersHorizontal className="h-2.5 w-2.5" /> Screen
+                  </>
+                )}
               </Badge>
             </div>
             <p className="text-[11px] text-muted-foreground truncate">{pick.name}</p>
@@ -126,9 +163,9 @@ export function PickCard({ pick, onAnalyze }: Props) {
             tone={pick.indicators.ema20 > pick.indicators.ema50 ? "gain" : "loss"}
           />
           <Chip
-            label="MACD"
-            value={pick.indicators.macdHist >= 0 ? "↑" : "↓"}
-            tone={pick.indicators.macdHist >= 0 ? "gain" : "loss"}
+            label="ADX"
+            value={num(pick.indicators.adx14, 0)}
+            tone={pick.indicators.adx14 >= 25 ? "gain" : "neutral"}
           />
           <Chip
             label="Vol"

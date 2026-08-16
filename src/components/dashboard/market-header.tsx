@@ -4,6 +4,7 @@ import { Activity, RefreshCw, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useIstClock, useMarketStatus } from "./use-market-status";
+import { SiteNav } from "./site-nav";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -48,6 +49,11 @@ export function MarketHeader({ onRefresh, refreshing, lastUpdated }: Props) {
           </div>
         </div>
 
+        {/* Section nav */}
+        <div className="ml-2 sm:ml-4">
+          <SiteNav />
+        </div>
+
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
           {/* Market status pill */}
           {status && (
@@ -56,7 +62,7 @@ export function MarketHeader({ onRefresh, refreshing, lastUpdated }: Props) {
                 "hidden sm:flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium",
                 accentMap[status.accent],
               )}
-              title={status.nextSessionLabel}
+              title={status.holidayName ? `${status.holidayName} — ${status.nextSessionLabel}` : status.nextSessionLabel}
             >
               <span
                 className={cn(
